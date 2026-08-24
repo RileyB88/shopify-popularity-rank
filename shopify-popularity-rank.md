@@ -169,8 +169,9 @@ instead of a direct write:
 1. Every run publishes `data/sku_popularity_rank.csv` (sku, popularity_rank)
    to this repo's default branch, at a stable raw URL:
    `https://raw.githubusercontent.com/RileyB88/woocommerce-popularity-rank/main/data/sku_popularity_rank.csv`
-2. In the live feed spreadsheet, add a tab (e.g. "popularity_rank_source")
-   with this formula in cell A1:
+2. In the live feed spreadsheet, add a tab named exactly `popularity_rank_score`
+   (this is the tab name actually in use — get it exact, since a mismatch
+   here is a `#REF!` error waiting to happen) with this formula in cell A1:
    ```
    =IMPORTDATA("https://raw.githubusercontent.com/RileyB88/woocommerce-popularity-rank/main/data/sku_popularity_rank.csv")
    ```
@@ -179,11 +180,13 @@ instead of a direct write:
 3. In Sheet1's `popularity_rank` column (H), replace the manually-entered
    values with:
    ```
-   =IFERROR(VLOOKUP($A2, popularity_rank_source!A:B, 2, FALSE), "")
+   =IFERROR(VLOOKUP($A2, popularity_rank_score!A:B, 2, FALSE), "")
    ```
-   and fill down. Rows for SKUs with no qualifying sales in the lookback
-   window return blank, matching the pipeline's "skip unsold products"
-   default.
+   and fill down **the entire column, all the way to the last row** —
+   a partial fill-down is exactly what causes some rows to silently keep
+   their old static values while others go live. Rows for SKUs with no
+   qualifying sales in the lookback window return blank, matching the
+   pipeline's "skip unsold products" default.
 
 This is a one-time manual setup (two formulas). After that, every weekly
 run's CSV push flows through automatically with no further action needed.
