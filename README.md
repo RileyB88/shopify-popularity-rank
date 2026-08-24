@@ -9,7 +9,7 @@ See [`shopify-popularity-rank.md`](./shopify-popularity-rank.md) for the
 full algorithm, GraphQL queries, and scoring script
 (`scripts/calculate_scores.py`).
 
-Runs automatically once a day via a scheduled Claude Routine — no server,
+Runs automatically once a week via a scheduled Claude Routine — no server,
 no API keys to manage.
 
 Originally a WooCommerce plugin, preserved in

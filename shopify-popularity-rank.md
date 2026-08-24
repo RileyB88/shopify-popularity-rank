@@ -130,9 +130,9 @@ with `metafields` entries of the form:
 
 ## Schedule
 
-Runs once a day via a Claude Routine (no separate hosting or API
+Runs once a week via a Claude Routine (no separate hosting or API
 credentials to manage — it reuses the Shopify connection already
-authorized in this workspace). See the "Fractel Popularity Rank – Daily"
+authorized in this workspace). See the "Fractel Popularity Rank – Weekly"
 Routine for the exact cron and prompt.
 
 ## Configuration
