@@ -6,13 +6,15 @@ popularity score used by the original WooCommerce "AM Popularity Rank" plugin.
 
 Input JSONL rows come from a bulkOperationRunQuery run against the query in
 shopify-popularity-rank.md (orders -> lineItems -> {quantity,
-discountedTotalSet, product{id}}, groupObjects: false). Order rows and
+discountedTotalSet, product{id}, sku}, groupObjects: false). Order rows and
 LineItem rows are interleaved in the file; LineItem rows are identified by
 having a "quantity" field and carry a "__parentId" pointing at their order.
 
 Usage:
     python3 calculate_scores.py orders.jsonl > scores.json
+    python3 calculate_scores.py orders.jsonl scores.json sku_popularity_rank.csv
 """
+import csv
 import json
 import math
 import sys
@@ -24,6 +26,7 @@ LOG_TRANSFORM = False
 
 def aggregate(jsonl_path):
     sales = {}
+    skus_by_product = {}
     orders_scanned = set()
 
     with open(jsonl_path) as f:
@@ -48,11 +51,36 @@ def aggregate(jsonl_path):
             entry["revenue"] += revenue
             entry["qty"] += qty
 
+            sku = row.get("sku")
+            if sku:
+                skus_by_product.setdefault(product_id, set()).add(sku)
+
             parent = row.get("__parentId")
             if parent:
                 orders_scanned.add(parent)
 
-    return sales, len(orders_scanned)
+    return sales, skus_by_product, len(orders_scanned)
+
+
+def sku_scores(scores, skus_by_product):
+    """Explode product-level scores out to one row per SKU, for feeds
+    (like the Google Shopping supplemental feed) that key by SKU/offer
+    rather than by parent product."""
+    result = {}
+    for product_id, skus in skus_by_product.items():
+        if product_id not in scores:
+            continue
+        for sku in skus:
+            result[sku] = scores[product_id]
+    return result
+
+
+def write_sku_csv(path, sku_score_map):
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["sku", "popularity_rank"])
+        for sku in sorted(sku_score_map):
+            writer.writerow([sku, sku_score_map[sku]])
 
 
 def rank_and_normalize(sales):
@@ -92,18 +120,29 @@ def rank_and_normalize(sales):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: calculate_scores.py <orders.jsonl>", file=sys.stderr)
+    if len(sys.argv) not in (2, 4):
+        print(
+            "Usage: calculate_scores.py <orders.jsonl> [scores.json sku_popularity_rank.csv]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    sales, orders_scanned = aggregate(sys.argv[1])
+    sales, skus_by_product, orders_scanned = aggregate(sys.argv[1])
     scores = rank_and_normalize(sales)
 
-    print(json.dumps({
+    output = {
         "orders_scanned": orders_scanned,
         "products_scored": len(scores),
         "scores": scores,
-    }, indent=2))
+    }
+
+    if len(sys.argv) == 4:
+        _, _, scores_out_path, csv_out_path = sys.argv
+        with open(scores_out_path, "w") as f:
+            json.dump(output, f, indent=2)
+        write_sku_csv(csv_out_path, sku_scores(scores, skus_by_product))
+    else:
+        print(json.dumps(output, indent=2))
 
 
 if __name__ == "__main__":

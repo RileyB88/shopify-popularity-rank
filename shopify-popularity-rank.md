@@ -68,6 +68,7 @@ mutation {
               edges {
                 node {
                   quantity
+                  sku
                   discountedTotalSet { shopMoney { amount } }
                   product { id }
                 }
@@ -100,8 +101,14 @@ time-limited link valid for 7 days — no auth header needed).
 ### 3. Score
 
 ```
-python3 scripts/calculate_scores.py orders.jsonl > scores.json
+python3 scripts/calculate_scores.py orders.jsonl scores.json data/sku_popularity_rank.csv
 ```
+
+The third argument is optional but used for the Google Shopping feed
+connection (see below) — it explodes each product's score out to one row
+per SKU (rolling a parent's score down to every variant), since the feed
+is keyed by SKU rather than parent product ID. Commit and push
+`data/sku_popularity_rank.csv` after every run.
 
 ### 4. Write back
 
@@ -145,6 +152,44 @@ Routine for the exact cron and prompt.
 | Quantity weight | 0.30 | |
 | Log-transform | off | flip `LOG_TRANSFORM` in `calculate_scores.py` for catalogs where a few products dominate |
 | Include unsold products (score 0.0) | off | not implemented in this port; ask if you want it added |
+
+## Connecting to the Google Shopping supplemental feed
+
+The live feed sheet ("Fractel - Google Shopping Supplemental Feed", Sheet1)
+already has a `popularity_rank` column (column H), keyed by `id` = SKU —
+one row per offer/variant, not per parent product.
+
+There's no direct write path from this pipeline into that Google Sheet: no
+Google Sheets API connector is available, and Drive's file tools can only
+create brand-new files, not edit an existing one's cells in place (doing so
+would assign a new file ID and break the sheet's registered Google Merchant
+Center supplemental source). So the connection goes through the repo
+instead of a direct write:
+
+1. Every run publishes `data/sku_popularity_rank.csv` (sku, popularity_rank)
+   to this repo's default branch, at a stable raw URL:
+   `https://raw.githubusercontent.com/RileyB88/woocommerce-popularity-rank/main/data/sku_popularity_rank.csv`
+2. In the live feed spreadsheet, add a tab (e.g. "popularity_rank_source")
+   with this formula in cell A1:
+   ```
+   =IMPORTDATA("https://raw.githubusercontent.com/RileyB88/woocommerce-popularity-rank/main/data/sku_popularity_rank.csv")
+   ```
+   Google Sheets refreshes `IMPORTDATA` periodically (roughly hourly) and
+   on file open.
+3. In Sheet1's `popularity_rank` column (H), replace the manually-entered
+   values with:
+   ```
+   =IFERROR(VLOOKUP($A2, popularity_rank_source!A:B, 2, FALSE), "")
+   ```
+   and fill down. Rows for SKUs with no qualifying sales in the lookback
+   window return blank, matching the pipeline's "skip unsold products"
+   default.
+
+This is a one-time manual setup (two formulas). After that, every weekly
+run's CSV push flows through automatically with no further action needed.
+The repo is public, so the CSV (relative percentile ranks only — no
+revenue or order data) is reachable without authentication, which is what
+makes plain `IMPORTDATA` work.
 
 ## Reading the score back
 
