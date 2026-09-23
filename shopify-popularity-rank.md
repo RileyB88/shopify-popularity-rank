@@ -2,10 +2,13 @@
 
 Port of the original WooCommerce "AM Popularity Rank" plugin (see
 `legacy-woocommerce/`) to Shopify. Calculates a 0.0–100.0 popularity
-percentile score per product from recent paid-order history and writes it to
-the `custom.popularity_rank_score` product metafield on wearefractel.com, for
-use in feed exports (e.g. Google Merchant Center's `popularity_rank` custom
-label/attribute).
+percentile score per product from recent paid-order history and publishes it
+as `data/sku_popularity_rank.csv`, which feeds the Google Shopping
+supplemental feed sheet (Google Merchant Center's `popularity_rank` custom
+label/attribute). Writing the same score to Shopify's
+`custom.popularity_rank_score` product metafield is supported but not run by
+the weekly automation — see "Writing scores to Shopify metafields (optional,
+not automated)" below.
 
 ## How it works
 
@@ -37,11 +40,14 @@ label/attribute).
    - `LOG_TRANSFORM` (off by default) and unsold-product handling exist as
      the same optional knobs the original plugin had; flip the constants
      at the top of the script if you want them later.
+   - explodes the per-product scores out to `data/sku_popularity_rank.csv`
+     (one row per SKU), which is the pipeline's actual deliverable — see
+     "Connecting to the Google Shopping supplemental feed" below.
 
-3. **Write scores back** — batch the results into Shopify's
-   `metafieldsSet` mutation (max 25 per call) writing to
-   `namespace: "custom", key: "popularity_rank_score", type:
-   "number_decimal"` on each `gid://shopify/Product/...`.
+3. **(Optional, not automated) Write scores to Shopify metafields** — the
+   weekly Routine does not run this step; Fractel relies on the CSV/feed
+   sheet instead. See "Writing scores to Shopify metafields (optional, not
+   automated)" below if you want to re-enable it.
 
 ## Order-qualifying rule
 
@@ -108,9 +114,21 @@ The third argument is optional but used for the Google Shopping feed
 connection (see below) — it explodes each product's score out to one row
 per SKU (rolling a parent's score down to every variant), since the feed
 is keyed by SKU rather than parent product ID. Commit and push
-`data/sku_popularity_rank.csv` after every run.
+`data/sku_popularity_rank.csv` to the repo's default branch after every
+run — that's the whole delivery mechanism; nothing else needs to happen
+for the feed sheet to update itself.
 
-### 4. Write back
+## Writing scores to Shopify metafields (optional, not automated)
+
+The pipeline can also write each product's score to Shopify as a product
+metafield, for use cases other than the CSV/feed sheet. **The weekly
+Routine does not do this** — Fractel relies solely on the CSV-driven
+supplemental feed, and the `metafieldsSet` mutation requires interactive
+permission approval in the Claude Code app, which previously left the
+Routine's session stuck for weeks waiting on an approval that never came
+(the CSV silently went stale as a result, since that step blocked the
+commit/push step after it). If you want scores on Shopify again, run this
+manually rather than re-adding it to the unattended weekly job.
 
 For each batch of ≤25 products from `scores.json`, call:
 
@@ -139,8 +157,10 @@ with `metafields` entries of the form:
 
 Runs once a week via a Claude Routine (no separate hosting or API
 credentials to manage — it reuses the Shopify connection already
-authorized in this workspace). See the "Fractel Popularity Rank – Weekly"
-Routine for the exact cron and prompt.
+authorized in this workspace). Each firing starts a fresh session (rather
+than reusing one persistent session) so a one-off snag in a given week's
+run can't permanently wedge future weeks. See the "Fractel Popularity Rank
+– Weekly" Routine for the exact cron and prompt.
 
 ## Configuration
 
@@ -152,6 +172,7 @@ Routine for the exact cron and prompt.
 | Quantity weight | 0.30 | |
 | Log-transform | off | flip `LOG_TRANSFORM` in `calculate_scores.py` for catalogs where a few products dominate |
 | Include unsold products (score 0.0) | off | not implemented in this port; ask if you want it added |
+| Shopify metafield write-back | off | CSV/feed sheet only; see "Writing scores to Shopify metafields" above to re-enable manually |
 
 ## Connecting to the Google Shopping supplemental feed
 
@@ -194,7 +215,10 @@ The repo is public, so the CSV (relative percentile ranks only — no
 revenue or order data) is reachable without authentication, which is what
 makes plain `IMPORTDATA` work.
 
-## Reading the score back
+## Reading the score back from Shopify
+
+Only relevant if you've run the optional metafield write-back above — the
+weekly automation doesn't populate this.
 
 ```graphql
 {
