@@ -12,22 +12,29 @@ not automated)" below.
 
 ## How it works
 
-1. **Collect sales data** — run a Shopify Bulk Operation
-   (`bulkOperationRunQuery`) against `orders`, filtered to orders created in
-   the last `LOOKBACK_DAYS` (default **90**) whose financial status is
-   `paid` or `partially_paid`. For each order, pull each line item's
-   `quantity` and `discountedTotalSet` (net of line-level discounts,
-   pre-tax — the closest Shopify equivalent to WooCommerce's net line
-   revenue), plus the parent `product.id` (Shopify's `LineItem.product`
-   already resolves to the parent product, so variant sales roll up for
-   free, matching the original plugin's behaviour).
+1. **Collect sales data** — paginate through `orders(first: 250, after:
+   $cursor, ...)`, filtered to orders created in the last `LOOKBACK_DAYS`
+   (default **90**) whose financial status is `paid` or `partially_paid`.
+   For each order, pull each line item's `quantity` and
+   `discountedTotalSet` (net of line-level discounts, pre-tax — the
+   closest Shopify equivalent to WooCommerce's net line revenue), plus the
+   parent `product.id` (Shopify's `LineItem.product` already resolves to
+   the parent product, so variant sales roll up for free, matching the
+   original plugin's behaviour).
 
-   A bulk operation is used instead of paginated `orders(first: 250)`
-   queries because a single 90-day window easily contains thousands of
-   qualifying orders (Fractel: ~6,800 as of the port) — bulk queries run
-   server-side and return one JSONL file instead of dozens of paginated
-   round-trips, mirroring the original plugin's preference for the fast
-   Analytics-lookup path over a per-order scan.
+   **This must go through the read-only GraphQL query tool, never
+   `bulkOperationRunQuery`.** An earlier version of this pipeline used a
+   Shopify Bulk Operation instead (server-side export, one JSONL file
+   instead of dozens of paginated round-trips) — but `bulkOperationRunQuery`
+   is technically a GraphQL *mutation*, and every mutation call through
+   this integration requires a human to interactively approve it in the
+   Claude Code app, with no way for an unattended session to supply that.
+   That's what silently wedged the weekly automation twice (2026-08 and
+   2026-09) — the session just sat waiting for an approval that never
+   came. Plain `orders(first: 250, ...)` queries carry no such
+   restriction, so that's the only supported path for the scheduled job
+   now, even though it costs ~30 round-trips instead of one at Fractel's
+   order volume (~7,000 orders / 90 days).
 
 2. **Aggregate & score** (`scripts/calculate_scores.py`) — sum revenue and
    quantity per product across the JSONL export, then:
@@ -58,53 +65,57 @@ payment-pending orders are excluded.
 
 ## Running a calculation
 
-### 1. Kick off the bulk query
+### 1. Paginate through orders (read-only — use `graphql_query`, never `graphql_mutation`)
+
+Start with `cursor = null`. Repeat until `pageInfo.hasNextPage` is `false`:
 
 ```graphql
-mutation {
-  bulkOperationRunQuery(
-    groupObjects: false
-    query: """
-    {
-      orders(query: "created_at:>=<CUTOFF_ISO8601> AND (financial_status:paid OR financial_status:partially_paid)") {
-        edges {
-          node {
-            id
-            lineItems {
-              edges {
-                node {
-                  quantity
-                  sku
-                  discountedTotalSet { shopMoney { amount } }
-                  product { id }
-                }
-              }
+query OrdersPage($cursor: String) {
+  orders(
+    first: 250
+    after: $cursor
+    sortKey: CREATED_AT
+    query: "created_at:>=<CUTOFF_ISO8601> AND (financial_status:paid OR financial_status:partially_paid)"
+  ) {
+    edges {
+      cursor
+      node {
+        id
+        lineItems(first: 250) {
+          edges {
+            node {
+              quantity
+              sku
+              discountedTotalSet { shopMoney { amount } }
+              product { id }
             }
           }
         }
       }
     }
-    """
-  ) {
-    bulkOperation { id status }
-    userErrors { field message }
+    pageInfo { hasNextPage }
   }
 }
 ```
 
 `<CUTOFF_ISO8601>` = now minus `LOOKBACK_DAYS` (default 90), e.g.
-`2026-05-26T00:00:00Z`.
+`2026-05-26T00:00:00Z`. Use the last edge's `cursor` as `$cursor` for the
+next page.
 
-### 2. Poll until complete
+For every line item in every page, append one line to a local
+`orders.jsonl` file in exactly the shape `calculate_scores.py` expects:
 
-```graphql
-{ currentBulkOperation { id status errorCode objectCount url } }
+```json
+{"quantity": 1, "sku": "ABC123", "discountedTotalSet": {"shopMoney": {"amount": "61.07"}}, "product": {"id": "gid://shopify/Product/123"}, "__parentId": "gid://shopify/Order/456"}
 ```
 
-Poll every ~15–30s. On `COMPLETED`, download the file at `url` (a signed,
-time-limited link valid for 7 days — no auth header needed).
+(The script only reads LineItem rows — it derives `orders_scanned` from
+the distinct `__parentId` values, so there's no need to also write a
+separate row per Order.) An order with more than 250 line items would
+need its own `lineItems` pagination too, but that's not a realistic case
+for Fractel's catalog.
 
-### 3. Score
+### 2. Score
 
 ```
 python3 scripts/calculate_scores.py orders.jsonl scores.json data/sku_popularity_rank.csv
